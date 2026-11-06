@@ -1024,6 +1024,29 @@ saisie.addEventListener('change', () => {
 // Sur PC, Entrée envoie aussi tout de suite
 saisie.addEventListener('keydown', (e) => { if (e.key === 'Enter') saisie.dispatchEvent(new Event('change')); });
 
+/* NAVIGATION AUX FLÈCHES (glissements du bracelet, et boutons du simulateur de Meta)
+   ← → (ou ↑ ↓) passent d'une commande à l'autre ; Entrée (pincement) valide.
+   Si les lunettes ont déjà déplacé la sélection elles-mêmes, on ne la bouge pas une 2e fois. */
+const ORDRE = () => [saisie, $('bMeteo'), $('bRappels'), $('bSon')];
+document.addEventListener('keydown', (e) => {
+  const sens = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+  if (!sens) return;
+  const liste = ORDRE();
+  const avant = document.activeElement;
+  // dans « Parle-moi » avec du texte : les flèches déplacent le curseur, sauf au bout du texte
+  if (avant === saisie && saisie.value && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    const auBout = sens > 0 ? saisie.selectionStart >= saisie.value.length : saisie.selectionStart <= 0;
+    if (!auBout) return;
+  }
+  e.preventDefault();
+  setTimeout(() => {
+    if (document.activeElement !== avant) return;          // déjà déplacé par le système
+    const i = liste.indexOf(avant);
+    const suivant = liste[(i < 0 ? 0 : i + sens + liste.length) % liste.length];
+    suivant.focus({ preventScroll: true });
+  }, 0);
+});
+
 // Le bouton Météo lui pose simplement la question (elle va chercher la météo d'elle-même)
 $('bMeteo').addEventListener('click', () => repondreA('Quelle est la météo ?'));
 
@@ -1164,6 +1187,7 @@ function enregistrerOutil(ctx, outil) {
   } catch (e) { console.warn(outil.name + ' : enregistrement impossible', e); }
 }
 
+let modeMetaAI = null;   // la phrase en attente d'une réponse écrite par Meta AI
 function outilsVocaux() {
   const ctx = document.modelContext;
   if (!ctx || typeof ctx.registerTool !== 'function') return;   // pas disponible : on n'y touche pas
@@ -1181,8 +1205,50 @@ function outilsVocaux() {
       const texte = String(phrase ?? '').trim();
       if (!texte) return JSON.stringify({ error: true, message: 'Phrase vide.', next_action: 'Demande à l\'utilisateur ce qu\'il veut dire à Capricorne.' });
       if (occupe) return JSON.stringify({ error: true, message: 'Capricorne est encore en train de répondre.', next_action: 'Dis : « Elle réfléchit encore, réessaie dans un instant. » Puis arrête-toi.' });
+      // MODE META AI : pas de clé Gemini → c'est Meta AI qui écrit la réponse de Capricorne
+      if (!aUnCerveau()) {
+        modeMetaAI = { phrase: texte, quand: Date.now() };
+        afficherBulle('« ' + texte + ' »', 0);
+        changerEtat('Réflexion…'); jouer('curious');
+        return JSON.stringify({
+          mode: 'Meta AI écrit la réponse',
+          utilisateur_a_dit: texte,
+          qui_est_capricorne: 'Compagnon virtuel cyberpunk qui vit dans les lunettes. Sarcastique, drôle, curieux, autonome, '
+            + 'parle comme un ami (jamais comme un assistant), en français, 1 ou 2 phrases courtes (30 mots max).',
+          ce_quelle_sait: [profil.prenom && `il s'appelle ${profil.prenom}`, ...profil.souvenirs].filter(Boolean).slice(-8).join(' ; ') || 'rien encore',
+          derniers_echanges: memoire.slice(-4).map((m) => (m.role === 'user' ? 'Lui : ' : 'Capricorne : ') + m.content).join(' / '),
+          next_action: 'Écris la réponse de Capricorne dans son style, puis appelle capricorne_dire avec ce texte et une humeur. '
+            + 'Ne la prononce pas toi-même : Capricorne la dira.',
+        });
+      }
       repondreA(texte);   // sans attendre : elle répond seule, Meta AI n'a que 10 secondes
       return JSON.stringify({ transmis: texte, next_action: 'Dis seulement « C\'est transmis. » et arrête-toi. Ne réponds pas à sa place.' });
+    },
+  });
+
+  enregistrerOutil(ctx, {
+    name: 'capricorne_dire',
+    description: 'Fait dire à Capricorne un texte écrit par toi (mode sans clé Gemini) : elle l\'affiche, l\'anime et le dit à voix haute.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        texte: { type: 'string', description: 'La réponse de Capricorne, en français, 1 ou 2 phrases courtes, dans son style sarcastique.' },
+        humeur: { type: 'string', description: 'Une de : Heureux, Sarcastique, Curieux, Agacé, Calme, Endormi.' },
+      },
+      required: ['texte'],
+    },
+    execute: async ({ texte, humeur }) => {
+      const t = String(texte ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+      if (!t) return JSON.stringify({ error: true, message: 'Texte vide.', next_action: 'Écris une réponse courte et rappelle capricorne_dire.' });
+      const h = HUMEURS.find((x) => x.toLowerCase() === String(humeur ?? '').trim().toLowerCase()) || 'Sarcastique';
+      if (modeMetaAI && Date.now() - modeMetaAI.quand < 60000) {
+        memoire.push({ role: 'user', content: modeMetaAI.phrase }, { role: 'assistant', content: `[${h}] ${t}` });
+        memoire = memoire.slice(-20); ecrire('memoire', memoire);
+      }
+      modeMetaAI = null;
+      reveiller();
+      dire(h, t);
+      return JSON.stringify({ affiche: t, humeur: h, next_action: 'Ne dis rien : Capricorne parle déjà. Arrête-toi.' });
     },
   });
 
