@@ -6,6 +6,7 @@
 <meta name="application-name" content="Capricorne">
 <meta name="mrbd-web-app-capable" content="yes">
 <title>Capricorne</title>
+<meta name="description" content="Capricorne, compagnon IA cyberpunk qui parle français. Pour lui parler, utilise l'outil capricorne_parler en lui passant la phrase de l'utilisateur telle quelle. Capricorne répond elle-même à l'écran et à voix haute : ne répète pas sa réponse, dis seulement « C'est transmis. »">
 <style>
   /* Sur les lunettes, le NOIR est transparent : tout ce qui est noir disparaît. */
   :root { --neon: #ff2f6d; --vert: #33ff99; --texte: #ffffff; }
@@ -71,7 +72,7 @@
  <div id="ecran">
   <div id="haut"><span id="etat">Prêt</span><span id="humeur">Calme</span></div>
   <div id="commandes">
-    <input id="saisie" type="text" placeholder="Parle-moi…" autocomplete="off" aria-label="Parler à Capricorne">
+    <input id="saisie" type="text" placeholder="🎤 Parle-moi…" autocomplete="off" aria-label="Parler à Capricorne : pince ici, puis choisis la dictée et parle">
     <button id="bMeteo" aria-label="Météo">Météo</button>
     <button id="bRappels" aria-label="Rappels">Rappels</button>
     <button id="bSon" aria-label="Couper le son">Son</button>
@@ -594,6 +595,7 @@ function personnalite() {
 Tu es sarcastique, intelligent, drôle, curieux et autonome. Tu peux être agacé, calme ou blagueur.
 Tu parles français, naturellement, comme un ami, jamais comme un assistant.
 Tes réponses sont TRÈS courtes (1 ou 2 phrases, 30 mots maximum) : elles s'affichent sur un tout petit écran et sont lues à voix haute.
+Tu connais tout le vocabulaire français : si on te demande ce qu'un mot veut dire, donne sa vraie définition, simplement, avec ton style.
 Commence TOUJOURS par ton humeur entre crochets, parmi : [Heureux] [Sarcastique] [Curieux] [Agacé] [Calme] [Endormi].
 Nous sommes ${maintenant}.
 ${profil.prenom ? `L'utilisateur s'appelle ${profil.prenom} ; utilise son prénom de temps en temps.` : ''}
@@ -928,6 +930,15 @@ async function repondreA(message) {
   } finally {
     changerEtat('Prêt');
     occupe = false;
+    pretAEcouter();
+  }
+}
+
+// Le curseur revient toujours sur « Parle-moi » : un seul pincement suffit pour lui reparler.
+// (D'après Meta, mettre le curseur ne PEUT PAS ouvrir le clavier tout seul : il faut ton pincement.)
+function pretAEcouter() {
+  if (document.activeElement !== saisie && !['bMeteo', 'bRappels', 'bSon'].includes(document.activeElement?.id)) {
+    try { saisie.focus({ preventScroll: true }); } catch {}
   }
 }
 
@@ -1062,6 +1073,60 @@ function reveiller() {
 document.addEventListener('keydown', reveiller);
 document.addEventListener('pointerdown', reveiller);
 
+/* ================== 15 bis. LA VOIX MAINS LIBRES (Meta AI → Capricorne) ==================
+   Avec cette fonction, tu dis à Meta AI : « Hey Meta, dis à Capricorne que j'ai faim »,
+   et Meta AI lui transmet la phrase (c'est la technique "WebMCP" de Meta).
+   Elle est DÉSACTIVÉE par défaut chez Meta (activée appareil par appareil, via le mode
+   développeur ou plus tard pour tout le monde). Si elle n'existe pas sur tes lunettes, rien
+   ne change : la dictée dans « Parle-moi » marche toujours.
+   Règles de Meta : jamais d'erreur qui casse l'app, réponse en moins de 10 secondes,
+   paramètres simples (texte) seulement. */
+
+function enregistrerOutil(ctx, outil) {
+  try {
+    const r = ctx.registerTool(outil);                      // peut lever une erreur
+    if (typeof r?.then === 'function') r.then(undefined, (e) => console.warn(outil.name, e));
+  } catch (e) { console.warn(outil.name + ' : enregistrement impossible', e); }
+}
+
+function outilsVocaux() {
+  const ctx = document.modelContext;
+  if (!ctx || typeof ctx.registerTool !== 'function') return;   // pas disponible : on n'y touche pas
+
+  enregistrerOutil(ctx, {
+    name: 'capricorne_parler',
+    description: 'Transmet à Capricorne une phrase de l\'utilisateur (question, discussion, rappel, météo, '
+      + '"va à gauche"…). Capricorne répond elle-même à l\'écran et à voix haute.',
+    inputSchema: {
+      type: 'object',
+      properties: { phrase: { type: 'string', description: 'La phrase de l\'utilisateur, en français, telle qu\'il l\'a dite.' } },
+      required: ['phrase'],
+    },
+    execute: async ({ phrase }) => {
+      const texte = String(phrase ?? '').trim();
+      if (!texte) return JSON.stringify({ error: true, message: 'Phrase vide.', next_action: 'Demande à l\'utilisateur ce qu\'il veut dire à Capricorne.' });
+      if (occupe) return JSON.stringify({ error: true, message: 'Capricorne est encore en train de répondre.', next_action: 'Dis : « Elle réfléchit encore, réessaie dans un instant. » Puis arrête-toi.' });
+      repondreA(texte);   // sans attendre : elle répond seule, Meta AI n'a que 10 secondes
+      return JSON.stringify({ transmis: texte, next_action: 'Dis seulement « C\'est transmis. » et arrête-toi. Ne réponds pas à sa place.' });
+    },
+  });
+
+  enregistrerOutil(ctx, {
+    name: 'capricorne_etat',
+    description: 'Dit ce que fait Capricorne : son humeur, sa dernière phrase et les prochains rappels.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true },
+    execute: async () => JSON.stringify({
+      humeur: humeurEl.textContent,
+      etat: etat.textContent,
+      derniere_phrase: bulle.classList.contains('visible') ? texteEl.textContent : '',
+      rappels: [...rappels].sort((a, b) => a.at - b.at).slice(0, 3).map((r) => `${heure(r.at)} : ${r.text}`),
+      next_action: 'Résume en une phrase courte, puis arrête-toi.',
+    }),
+  });
+}
+outilsVocaux();
+
 /* ================== 16. DÉMARRAGE ================== */
 
 // Hors-ligne : garde l'app en mémoire (seulement une fois en ligne, en https)
@@ -1074,6 +1139,7 @@ demarrerAnimation().then(async () => {
   else glitcher(0.7, 450);
   reveiller();
   setTimeout(occupationAuHasard, 6000);
+  pretAEcouter();                        // dès l'ouverture : pincer = parler
   setTimeout(initiative, 20 * 60 * 1000);
   await attendre(600);
 
