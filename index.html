@@ -1,0 +1,1092 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="application-name" content="Capricorne">
+<meta name="mrbd-web-app-capable" content="yes">
+<title>Capricorne</title>
+<style>
+  /* Sur les lunettes, le NOIR est transparent : tout ce qui est noir disparaît. */
+  :root { --neon: #ff2f6d; --vert: #33ff99; --texte: #ffffff; }
+  html, body {
+    margin: 0; padding: 0; background: #000; overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--texte);
+    touch-action: none;   /* active le "pincer-glisser" des lunettes (pour la caresser) */
+  }
+  /* Le cadre = taille de l'écran des lunettes (600 x 600), centré sur PC */
+  #ecran { position: relative; width: min(600px, 100vw); height: min(600px, 100vh); margin: 0 auto; outline: 1px solid #222; }
+
+  /* ---------- Barre du haut : état, humeur ---------- */
+  #haut { position: absolute; left: 24px; right: 24px; top: 8px; display: flex; justify-content: space-between; font-size: 17px; letter-spacing: 2px; text-transform: uppercase; }
+  #etat { color: var(--vert); }
+  #humeur { color: var(--neon); }
+
+  /* ---------- Commandes : on passe de l'une à l'autre avec les flèches, pincement = valider ---------- */
+  #commandes { position: absolute; left: 24px; right: 24px; top: 38px; display: flex; gap: 8px; }
+  #saisie {
+    flex: 1; min-width: 0; font-size: 20px; padding: 6px 10px;
+    background: #000; color: #fff; border: 2px solid #1d6b48; outline: none;
+  }
+  #commandes button {
+    font-size: 17px; padding: 6px 10px; background: #000; color: var(--vert);
+    border: 2px solid #1d6b48; font-family: inherit;
+  }
+  /* L'élément sélectionné doit se voir par la forme, pas seulement la couleur */
+  #saisie:focus, #commandes button:focus { border-color: var(--vert); box-shadow: 0 0 10px var(--vert); outline: 2px solid #fff; outline-offset: 2px; }
+
+  /* ---------- La bulle néon, avec son visage selon l'humeur ---------- */
+  #bulle {
+    position: absolute; left: 24px; right: 24px; top: 92px;
+    display: flex; gap: 12px; align-items: center;
+    padding: 8px 12px; border: 2px solid var(--neon); box-shadow: 0 0 12px var(--neon);
+    font-size: 22px; line-height: 1.25; min-height: 72px; max-height: 210px;
+    clip-path: polygon(0 0, 100% 0, 100% 82%, 96% 100%, 0 100%);
+    opacity: 0; transition: opacity .2s;
+  }
+  #bulle.visible { opacity: 1; }
+  /* Le texte : sa taille s'adapte pour tout faire tenir (voir ajusterTexte) */
+  #texte { flex: 1; min-width: 0; max-height: 190px; overflow-y: auto; overflow-wrap: anywhere; scrollbar-width: none; }
+  #visage { width: 72px; height: 72px; flex: none; border: 1px solid var(--vert); }
+  #visage.glitch { animation: glitch .25s steps(2) 2; }
+  @keyframes glitch {
+    0%   { transform: translateX(-4px); filter: drop-shadow(4px 0 0 #00e5ff); }
+    50%  { transform: translateX(3px);  filter: drop-shadow(-4px 0 0 var(--neon)); }
+    100% { transform: none; filter: none; }
+  }
+
+  /* ---------- Le personnage ---------- */
+  #corps { position: absolute; left: 50%; bottom: 6px; transform-origin: 50% 100%; }
+  /* Calque des effets de Capri (éclats, colonnes de lumière, éclairs) par-dessus tout */
+  #fx { position: absolute; left: 0; top: 0; pointer-events: none; }
+  /* Son masque, quand elle dort (comme dans Capri) */
+  #masque { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #corps canvas, #corps img { display: block; transform-origin: 50% 85%; }
+  /* Plan B si les lunettes n'ont pas WebGL : simple image qui flotte */
+  #corps img { height: 230px; animation: flotte 2.4s steps(4) infinite; }
+  @keyframes flotte { 50% { transform: translateY(-8px); } }
+</style>
+</head>
+<body>
+ <div id="ecran">
+  <div id="haut"><span id="etat">Prêt</span><span id="humeur">Calme</span></div>
+  <div id="commandes">
+    <input id="saisie" type="text" placeholder="Parle-moi…" autocomplete="off" aria-label="Parler à Capricorne">
+    <button id="bMeteo" aria-label="Météo">Météo</button>
+    <button id="bRappels" aria-label="Rappels">Rappels</button>
+    <button id="bSon" aria-label="Couper le son">Son</button>
+  </div>
+  <div id="bulle"><img id="visage" alt=""><span id="texte"></span></div>
+  <div id="corps"><canvas id="toile"></canvas></div>
+  <canvas id="masque" hidden></canvas>
+  <canvas id="fx"></canvas>
+ </div>
+
+<script src="js/images.js"></script>
+<script src="js/animations.js"></script>
+<script src="js/capri-extras.js"></script>
+<script src="js/effets.js"></script>
+<script>
+/* =====================================================================
+   CAPRICORNE — vue lunettes (Meta Ray-Ban Display)
+
+   Sur les lunettes :
+     - glisser (flèches) pour passer d'un bouton à l'autre, pincer (Entrée) pour valider
+     - pincer sur "Parle-moi…" ouvre le clavier des lunettes : dictée vocale,
+       écriture au doigt ou clavier à l'écran
+     - pincer-glisser de gauche à droite sur elle = la caresser
+   Sur PC : clic ou Tab + Entrée, et on écrit dans "Parle-moi…".
+   ===================================================================== */
+
+const $ = (id) => document.getElementById(id);
+const corps = $('corps'), toile = $('toile'), bulle = $('bulle'), texteEl = $('texte'), visage = $('visage');
+const etat = $('etat'), humeurEl = $('humeur'), saisie = $('saisie');
+
+/* ---------- Sauvegarde dans le navigateur (localStorage) ---------- */
+function lire(cle, defaut) {
+  try { const v = localStorage.getItem('capricorne_' + cle); return v === null ? defaut : JSON.parse(v); }
+  catch { return defaut; }
+}
+function ecrire(cle, valeur) {
+  try { localStorage.setItem('capricorne_' + cle, JSON.stringify(valeur)); } catch { /* plein ou bloqué : tant pis */ }
+}
+// Capri sauvegardait via son appli de bureau : ici on lui donne le navigateur à la place
+const hote = { setConfig: (o) => { for (const [k, v] of Object.entries(o)) ecrire(k, v); } };
+
+/* ================== 1. ANIMATION (moteur de Capri) ================== */
+
+const TAILLE = 0.55;              // <- taille du personnage (0.55 = petit, 0.8 = plus grand)
+let rendu = null;
+let fond = new Player('stand');
+let acte = null;
+let parleEnBoucle = false;
+let enPause = false;
+let facing = 1;                   // 1 = regarde à droite, -1 = à gauche
+let posX = 300;                   // où elle se trouve (centre de son corps), de 0 à 600
+let teleportEnCours = false;
+const effets = new FxLayer(document.getElementById('fx'));
+
+const p = {
+  seed: 0, boil: 0.9, hair: 0, head: 0, mane: 0, armL: 0, armR: 0, longL: 1, longR: 1, sit: 0, bend: 0, kickL: 0, kickR: 0,
+  smear: [0, 0], echo: [0, 0], glitch: 0, glitchSeed: 0, split: 0, collapse: 0, dissolve: 0, sparkle: 1, grade: 1,
+  sil: [0.08, 0.06, 0.11], silAmount: 0, misreg: [-2.6, 2.2], alpha: 1,
+};
+
+function jouer(nom, dir) {
+  if (!ACTS[nom]) return;
+  if (acte && acte.priority > (ACTS[nom].priority ?? 0)) return;
+  acte = new Player(nom, { dir: dir ?? (Math.random() < 0.5 ? -1 : 1) });
+}
+function changerFond(nom) { if (fond.name !== nom) fond = new Player(nom); }
+function glitcher(force = 0.5, duree = 250) {
+  p.glitch = force; p.glitchSeed = Math.random() * 100; p.split = 3;
+  setTimeout(() => { p.glitch = 0; p.split = 0; }, duree);
+}
+function chargerImage(src) {
+  return new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = src; });
+}
+
+let derniereImage = 0;
+function boucle(maintenant) {
+  requestAnimationFrame(boucle);
+  if (enPause || !rendu) return;
+  const vitesse = fond.name === 'sleep' ? 1000 / 6 : 1000 / 12;   // 12 images/s comme un anime, 6 quand elle dort
+  if (maintenant - derniereImage < vitesse - 1) return;
+  derniereImage = maintenant;
+
+  p.seed = Math.random() * 100;
+  const dessous = fond.sample(maintenant);
+  const base = dessous ? fond.resolve(dessous.pose, 1) : {};
+  let dessus = {};
+  if (acte) {
+    const d = acte.sample(maintenant);
+    if (d) dessus = acte.resolve(d.pose, 1);
+    else acte = parleEnBoucle ? new Player('talk') : null;
+  }
+  const pose = { ...NEUTRAL, ...base, ...dessus };
+  for (const k of ['head', 'mane', 'hair', 'armL', 'armR', 'longL', 'longR', 'kickL', 'kickR', 'bend', 'smear', 'echo']) p[k] = pose[k];
+  rendu.draw(p);
+  corps.style.left = posX + 'px';
+  corps.style.transform = `translate(-50%, ${(pose.bob * TAILLE).toFixed(1)}px)`;
+  toile.style.transform = `rotate(${pose.tilt.toFixed(2)}deg) scale(${(facing * pose.sx).toFixed(3)}, ${pose.sy.toFixed(3)})`;
+}
+
+/* ---------- LA TÉLÉPORTATION (comme dans Capri : vanish + arrive) ---------- */
+
+const ecranEl = document.getElementById('ecran');
+function tailleEcran() { return { w: ecranEl.clientWidth, h: ecranEl.clientHeight }; }
+
+// Où est sa tête à l'écran (pour placer les effets)
+function tete() {
+  const e = ecranEl.getBoundingClientRect();
+  const r = toile.getBoundingClientRect();
+  const s = TAILLE;
+  const x = facing === 1 ? r.left + (SPRITE.pad + SPRITE.head.x) * s : r.right - (SPRITE.pad + SPRITE.head.x) * s;
+  return { x: x - e.left, y: r.top - e.top + (SPRITE.pad + SPRITE.head.y) * s, top: r.top - e.top + SPRITE.pad * s, sol: r.bottom - e.top - SPRITE.pad * s };
+}
+
+// Un endroit au hasard en bas de l'écran, assez loin d'où elle est
+function endroitAuHasard() {
+  const { w } = tailleEcran();
+  const demi = (SPRITE.width / 2 + 10) * TAILLE;
+  for (let i = 0; i < 10; i++) {
+    const x = rand(demi + 10, w - demi - 10);
+    if (Math.abs(x - posX) > 120) return x;
+  }
+  return w - posX;
+}
+
+const GREEN = [0.21, 1, 0.48];
+const INK = [0.08, 0.06, 0.11];
+
+async function disparaitre() {
+  const avant = tete();
+  son('teleport-out');
+  p.glitchSeed = Math.random() * 100;
+  await tween(p, { glitch: 0.35, split: 3 }, 90, ease.linear);
+  effets.burst(avant.x, avant.y + 70 * TAILLE, { count: 22, spread: 150 * TAILLE });
+  effets.slices(avant.x - 70 * TAILLE, avant.y - 40 * TAILLE, 170 * TAILLE, 320 * TAILLE);
+  await tween(p, { collapse: 1, glitch: 1, dissolve: 0.5, split: 9 }, 170, ease.in);
+  p.alpha = 0;
+  // le vide qu'elle laisse, comme dans la série : une fente noire avec un trait rouge
+  effets.slit(posX - 10 * TAILLE * facing, avant.top, avant.sol, { width: 56 * TAILLE + 10 });
+  effets.beam(posX, avant.sol, { width: 40 * TAILLE + 8 });
+  return avant;
+}
+
+async function apparaitre(x, depuis) {
+  facing = x > posX ? 1 : -1;
+  posX = x;
+  corps.style.left = posX + 'px';
+  await new Promise(requestAnimationFrame);
+  const apres = tete();
+  if (depuis) { effets.streak(depuis.x, depuis.y, apres.x, apres.y); await sleep(60); }
+  effets.beam(posX, apres.sol, { down: true, width: 40 * TAILLE + 8 });
+  effets.vortex(apres.x, apres.y + 30 * TAILLE, { radius: 170 * TAILLE + 40 });
+  son('teleport-in');
+  await sleep(50);
+  p.alpha = fond.name === 'sleep' ? 0.55 : 1;
+  p.glitchSeed = Math.random() * 100;
+  await tween(p, { collapse: 0, dissolve: 0, glitch: 0.6, split: 6 }, 200, ease.out);
+  // deux images d'impact, façon anime
+  p.sil = GREEN; p.silAmount = 1; await sleep(1000 / 24);
+  p.sil = INK; await sleep(1000 / 24);
+  p.silAmount = 0;
+  effets.burst(apres.x, apres.y + 60 * TAILLE, { count: 10, power: 0.55, spread: 110 * TAILLE });
+  await tween(p, { glitch: 0, split: 0 }, 220, ease.out);
+}
+
+// Se téléporter : x = où aller (sinon au hasard)
+async function teleporter(x = endroitAuHasard()) {
+  if (teleportEnCours || !rendu) return;
+  teleportEnCours = true;
+  try {
+    acte = null;
+    const depuis = await disparaitre();
+    await sleep(70);
+    await apparaitre(x, depuis);
+  } finally {
+    p.alpha = fond.name === 'sleep' ? 0.55 : 1; p.collapse = 0; p.dissolve = 0;
+    teleportEnCours = false;
+  }
+}
+const auCentre = () => tailleEcran().w / 2;
+
+/* ---------- CUT-INS : gros plans d'elle, tirés de la série (comme dans Capri) ---------- */
+// Placé à côté de sa tête, du côté où il y a de la place
+function cutin(sorte = 'grin', duree) {
+  if (!rendu || teleportEnCours || masque.visible) return;
+  const h = tete();
+  const { w } = tailleEcran();
+  const ecart = 85 * TAILLE + 24, largeur = 274;
+  const tient = (d) => (d > 0 ? h.x + ecart + largeur < w - 8 : h.x - ecart - largeur > 8);
+  const dir = tient(facing) ? facing : tient(-facing) ? -facing : 0;
+  const y = Math.max(330, h.y - 18);   // jamais par-dessus la bulle
+  if (dir) effets.cutin(h.x + dir * ecart, y, dir, { kind: sorte, ...(duree ? { life: duree } : {}) });
+  else effets.cutin(clamp(h.x - largeur / 2, 8, w - largeur - 8), y, 1, { kind: sorte, ...(duree ? { life: duree } : {}) });
+}
+
+/* ---------- SON MASQUE QUAND ELLE DORT (le "chip.js" de Capri) ----------
+   Endormie depuis un moment, sa crinière et son corps se défont : il ne reste que son masque
+   vert et ses yeux, fermés, qui flottent. De temps en temps elle entrouvre un œil. */
+const masqueToile = document.getElementById('masque');
+const masqueCtx = masqueToile.getContext('2d');
+const masque = { visible: false, x: 0, y: 0, k: 0.5, montreA: 0, reveilA: 0, prochainClin: 0, clin: null, derniere: 0 };
+(function preparerMasque() {
+  const dpr = window.devicePixelRatio || 1;
+  masqueToile.width = 140 * dpr; masqueToile.height = 170 * dpr;
+  masqueToile.style.width = '140px'; masqueToile.style.height = '170px';
+})();
+
+function dessinerMasque(maintenant) {
+  if (!masque.visible) return;
+  requestAnimationFrame(dessinerMasque);
+  if (maintenant - masque.derniere < 1000 / 12 - 1) return;     // 12 images/s, comme elle
+  masque.derniere = maintenant;
+  const image = Math.floor(maintenant / (1000 / 12));
+  const dpr = window.devicePixelRatio || 1;
+  masqueCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  masqueCtx.clearRect(0, 0, 140, 170);
+  const cx = 70, cy = 110;
+  if (maintenant - masque.montreA < 1000 / 12 * 1.5) {              // il arrive en silhouette blanche
+    drawMask(masqueCtx, cx, cy, masque.k, { flat: COLORS.paper });
+    return;
+  }
+  const flotte = [0, -1.5, -3, -1.5][Math.floor(image / 6) % 4];
+  let yeux = [0, 0];
+  if (maintenant > masque.prochainClin && !masque.clin) {
+    masque.clin = { oeil: Math.random() < 0.5 ? 0 : 1, jusqua: maintenant + rand(700, 1100) };
+    masque.prochainClin = maintenant + rand(7000, 14000);
+  }
+  if (masque.clin) {
+    if (maintenant > masque.clin.jusqua) masque.clin = null;
+    else yeux[masque.clin.oeil] = 0.45;                            // un œil entrouvert
+  }
+  const tremble = masque.reveilA ? rand(-2, 2) : 0;
+  if (masque.reveilA) yeux = [1, 1];                               // ses yeux s'ouvrent d'un coup
+  drawMask(masqueCtx, cx + tremble, cy + flotte, masque.k, { eyes: yeux });
+}
+
+async function entrerDansLeMasque() {
+  if (masque.visible || teleportEnCours || !rendu || humeurEl.textContent !== 'Endormi') return;
+  teleportEnCours = true;
+  const h = tete();
+  effets.burst(h.x, h.y + 60 * TAILLE, { count: 10, power: 0.3, spread: 120 * TAILLE });
+  p.glitchSeed = Math.random() * 100;
+  await tween(p, { dissolve: 0.9, glitch: 0.25, sparkle: 0 }, 700, ease.in);
+  Object.assign(p, { alpha: 0, dissolve: 0, glitch: 0 });
+  masque.x = h.x; masque.y = h.y;
+  masqueToile.style.transform = `translate(${Math.round(h.x - 70)}px, ${Math.round(h.y - 110)}px)`;
+  Object.assign(masque, { visible: true, montreA: performance.now(), reveilA: 0, clin: null, prochainClin: performance.now() + rand(5000, 9000) });
+  masqueToile.hidden = false;
+  requestAnimationFrame(dessinerMasque);
+  teleportEnCours = false;
+}
+
+async function sortirDuMasque() {
+  if (!masque.visible || masque.reveilA) return;
+  masque.reveilA = performance.now();                              // yeux grands ouverts
+  son('alert');
+  await sleep(280);
+  masque.visible = false;
+  masqueToile.hidden = true;
+  changerHumeur('Calme');
+  Object.assign(p, { alpha: 0, collapse: 0.6, dissolve: 0.5, glitch: 0, split: 0, sparkle: 1 });
+  teleportEnCours = true;
+  try { await apparaitre(posX, null); } finally { teleportEnCours = false; p.collapse = 0; p.dissolve = 0; }
+  cutin('eyes', 480);
+}
+
+async function demarrerAnimation() {
+  const img = await chargerImage(IMAGES.corps);
+  try {
+    rendu = new SpriteRenderer(toile, img);
+    rendu.resize(TAILLE);
+    const { w, h } = tailleEcran();
+    effets.resize(w, h);
+    // ses gros plans pour les cut-ins
+    const noms = Object.keys(CUTINS);
+    const images = await Promise.all(noms.map((n) => chargerImage(CUTINS[n]).catch(() => null)));
+    effets.cutins = Object.fromEntries(noms.map((n, i) => [n, images[i]]).filter(([, im]) => im));
+  } catch (e) {
+    // Les lunettes n'ont pas WebGL : on affiche l'image simple qui flotte
+    rendu = null;
+    toile.remove();
+    corps.appendChild(img);
+    console.warn('WebGL indisponible, image simple', e);
+  }
+  requestAnimationFrame(boucle);
+}
+
+// Économie de batterie : rien n'est dessiné quand l'app n'est pas affichée
+document.addEventListener('visibilitychange', () => { enPause = document.hidden; });
+
+/* ================== 2. SONS (Web Audio, comme dans Capri) ================== */
+// Non garanti sur les lunettes : si ça ne marche pas, c'est silencieux, sans planter.
+const sons = ('AudioContext' in window) ? new Voice() : null;
+let muet = lire('muet', false);
+function son(nom) { if (!sons || muet) return; try { sons.play(nom); } catch {} }
+
+/* ================== 3. HUMEURS ================== */
+
+const HUMEURS = ['Heureux', 'Sarcastique', 'Curieux', 'Agacé', 'Calme', 'Endormi'];
+const GESTE = { Heureux: 'hop', Sarcastique: 'curious', Curieux: 'look', 'Agacé': 'huff', Calme: 'stretch' };
+
+function changerHumeur(h) {
+  const avant = humeurEl.textContent;
+  humeurEl.textContent = h;
+  visage.src = IMAGES[h] || IMAGES.Calme;
+  if (h === 'Endormi') { changerFond('sleep'); p.alpha = 0.55; p.boil = 0.4; return; }
+  changerFond('stand'); p.alpha = 1; p.boil = 0.9;
+  if (h !== avant) {
+    visage.classList.remove('glitch'); void visage.offsetWidth; visage.classList.add('glitch');
+    glitcher(0.3, 160);
+    if (GESTE[h]) jouer(GESTE[h]);
+    if (h === 'Heureux') cutin(pick(['laugh', 'grin']));
+    if (h === 'Agacé') cutin('look', 560);
+  }
+}
+
+/* ================== 4. DEPUIS QUAND TU N'ES PAS VENU ================== */
+
+const derniereVisite = lire('derniere_visite', Date.now());
+const absence = Math.floor((Date.now() - derniereVisite) / 86400000);   // en jours
+ecrire('derniere_visite', Date.now());
+setInterval(() => ecrire('derniere_visite', Date.now()), 10 * 60 * 1000);
+
+/* ================== 5. CE QU'ELLE SAIT DE TOI ================== */
+
+let profil = lire('profil', { prenom: '', souvenirs: [] });
+let memoire = lire('memoire', []);
+
+// "appelle-moi Léa", "souviens-toi que mon chat s'appelle Neko", "oublie tout"
+async function commandeProfil(message) {
+  // "j'habite à Lyon", "ma ville est Lyon", "je suis à Lyon"
+  let v = message.match(/(?:(j'habite|je vis|je suis)\s+(?:à|a|au|aux|en)\s+|j'habite\s+|ma ville (?:c'est|est)\s+)([\p{L}' -]{2,40}?)\s*[.!]?$/iu);
+  if (v) {
+    const ville = await trouverVille(v[2].trim());
+    if (!ville && /je suis|je vis/i.test(v[1] || '')) return null;   // "je suis à la maison" : ce n'est pas une ville
+    if (!ville) return `« ${v[2].trim()} » ? Jamais entendu parler. Vérifie l'orthographe.`;
+    ecrire('ville', ville); derniereMeteo = null;
+    return `${ville.nom}, noté. Je pourrai te donner la météo de là-bas.`;
+  }
+  let m = message.match(/(?<![\p{L}])(?:appelle[- ]moi|mon (?:pr[ée]nom|nom) (?:c'est|est))\s+([\p{L}'-]{2,20})/iu);
+  if (m) { profil.prenom = m[1].trim(); ecrire('profil', profil); return `Noté. ${profil.prenom}. Je m'en souviendrai.`; }
+  m = message.match(/(?:souviens[- ]toi|retiens|n'oublie pas)\s+(?:que\s+|qu')?(.{3,140})/iu);
+  if (m && !/rappelle/i.test(message)) {
+    profil.souvenirs = [...profil.souvenirs, m[1].trim()].slice(-15);
+    ecrire('profil', profil);
+    return 'Enregistré dans ma mémoire. Pour toujours. Enfin, jusqu\'à ce que tu vides ton navigateur.';
+  }
+  if (/qu'?est[- ]ce que tu sais (?:sur|de) moi|que sais[- ]tu (?:sur|de) moi|tu te souviens de quoi/i.test(message)) {
+    const tout = [profil.prenom && `tu t'appelles ${profil.prenom}`, ...profil.souvenirs].filter(Boolean);
+    if (!tout.length) return 'Rien pour l\'instant. Tu es un mystère. Raconte-moi des trucs.';
+    return 'Ce que je sais de toi : ' + tout.slice(-8).join(' · ') + '.';
+  }
+  m = message.match(/^\s*oublie (?:que |qu')(.{3,80})/iu);
+  if (m) {
+    const mots = m[1].toLowerCase().split(/\W+/u).filter((x) => x.length > 3);
+    const avant = profil.souvenirs.length;
+    profil.souvenirs = profil.souvenirs.filter((f) => !mots.some((x) => f.toLowerCase().includes(x)));
+    ecrire('profil', profil);
+    return profil.souvenirs.length < avant ? 'Oublié. Enfin… je fais semblant.' : 'Je ne savais même pas ça.';
+  }
+  if (/^\s*oublie tout\b/i.test(message)) {
+    profil = { prenom: '', souvenirs: [] }; memoire = [];
+    ecrire('profil', profil); ecrire('memoire', memoire);
+    return 'Mémoire effacée. Qui es-tu, déjà ?';
+  }
+  return null;
+}
+
+/* ================== 6. LA VOIX (synthèse vocale des lunettes) ================== */
+// Sur les lunettes : une seule voix, le volume est celui du système, le français reste à tester.
+// C'est pour ça que le texte reste TOUJOURS affiché à l'écran.
+
+function parler(texte) {
+  return new Promise((fini) => {
+    if (muet || !('speechSynthesis' in window) || !window.SpeechSynthesisUtterance) { setTimeout(fini, 2500); return; }
+    try {
+      speechSynthesis.cancel();
+      const phrase = new SpeechSynthesisUtterance(texte);
+      phrase.lang = 'fr-FR';
+      phrase.pitch = 0.7;   // plus grave = plus "robot"
+      phrase.rate = 1.05;
+      const securite = setTimeout(fini, 20000);
+      phrase.onend = () => { clearTimeout(securite); fini(); };
+      phrase.onerror = () => { clearTimeout(securite); fini(); };
+      speechSynthesis.speak(phrase);
+    } catch { setTimeout(fini, 2500); }
+  });
+}
+
+/* ================== 7. AFFICHAGE ================== */
+
+let minuterieBulle;
+// Réduit la police jusqu'à ce que tout le texte tienne dans la bulle (de 24 px à 13 px)
+function ajusterTexte() {
+  for (let taille = 24; taille >= 13; taille--) {
+    texteEl.style.fontSize = taille + 'px';
+    if (texteEl.scrollHeight <= texteEl.clientHeight + 1) return;
+  }
+}
+
+// duree = 0 : la bulle reste affichée jusqu'à ce qu'on la cache (pendant qu'elle parle)
+function afficherBulle(texte, duree = 7000) {
+  texteEl.textContent = texte;
+  texteEl.scrollTop = 0;
+  bulle.classList.add('visible');
+  ajusterTexte();
+  clearTimeout(minuterieBulle);
+  if (duree > 0) minuterieBulle = setTimeout(cacherBulle, duree);
+}
+function cacherBulle(apres = 0) {
+  clearTimeout(minuterieBulle);
+  minuterieBulle = setTimeout(() => bulle.classList.remove('visible'), apres);
+}
+function changerEtat(t) { etat.textContent = t; }
+
+// Elle dit quelque chose (bulle + voix + animation)
+let numeroParole = 0;   // chaque phrase a un numéro : une nouvelle phrase annule l'ancienne
+async function dire(humeur, texte) {
+  const moi = ++numeroParole;
+  if (humeur) changerHumeur(humeur);
+  afficherBulle(texte, 0);                 // reste affichée pendant toute la phrase
+  changerEtat('Parole');
+  parleEnBoucle = true;
+  if (!acte) acte = new Player('talk');
+  await parler(texte);
+  if (moi !== numeroParole) return;        // on lui a reparlé entre-temps : on ne touche plus à rien
+  parleEnBoucle = false;
+  changerEtat('Prêt');
+  // puis encore un moment pour finir de lire (plus long si le texte est long)
+  cacherBulle(Math.max(6000, texte.split(/\s+/).length * 400));
+}
+
+/* ================== 8. MÉTÉO (position du téléphone + Open-Meteo, gratuit sans clé) ================== */
+
+const CODES_METEO = {
+  0: 'ciel dégagé', 1: 'plutôt dégagé', 2: 'partiellement nuageux', 3: 'couvert', 45: 'brouillard', 48: 'brouillard givrant',
+  51: 'bruine', 53: 'bruine', 55: 'bruine forte', 61: 'pluie faible', 63: 'pluie', 65: 'forte pluie',
+  71: 'neige faible', 73: 'neige', 75: 'forte neige', 80: 'averses', 81: 'averses', 82: 'grosses averses',
+  95: 'orage', 96: 'orage avec grêle', 99: 'orage avec grêle',
+};
+
+// La position GPS. On n'attend jamais plus de 7 secondes (avant, ça pouvait bloquer pour toujours
+// si la demande d'autorisation restait sans réponse : c'est le bug "rien ne se passe").
+function position() {
+  return new Promise((ok, ko) => {
+    if (!navigator.geolocation) return ko(new Error('pas de localisation'));
+    const limite = setTimeout(() => ko(new Error('position trop lente')), 7000);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { clearTimeout(limite); ok({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); },
+      () => { clearTimeout(limite); ko(new Error('position refusée')); },
+      { timeout: 6500, maximumAge: 30 * 60 * 1000 });
+  });
+}
+
+// Plan B : ta ville, enregistrée avec "j'habite à Lyon" (marche partout, même sans GPS)
+async function trouverVille(nom) {
+  const r = await fetchLimite('https://geocoding-api.open-meteo.com/v1/search?count=1&language=fr&name=' + encodeURIComponent(nom));
+  if (!r.ok) throw new Error('recherche de ville impossible');
+  const v = (await r.json()).results?.[0];
+  if (!v) return null;
+  return { nom: v.name, latitude: v.latitude, longitude: v.longitude };
+}
+
+let gpsEnPanne = false;          // si la position a échoué une fois, on ne la réattend pas
+let derniereMeteo = null;         // gardée 15 min : pas besoin de redemander à chaque fois
+async function meteo() {
+  if (derniereMeteo && Date.now() - derniereMeteo.quand < 15 * 60 * 1000) return derniereMeteo.texte;
+  let c = null;
+  const ville = lire('ville', null);
+  if (!gpsEnPanne) {
+    try { c = await position(); }
+    catch { gpsEnPanne = true; }
+  }
+  if (!c) {
+    if (!ville) throw new Error('ville inconnue');
+    c = ville;
+  }
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${c.latitude.toFixed(2)}&longitude=${c.longitude.toFixed(2)}`
+    + '&current=temperature_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1';
+  const r = await fetchLimite(url, {}, 8000);
+  if (!r.ok) throw new Error('météo indisponible');
+  const d = await r.json();
+  derniereMeteo = { quand: Date.now(), texte: '' };
+  return derniereMeteo.texte = `${Math.round(d.current.temperature_2m)}°C, ${CODES_METEO[d.current.weather_code] || 'temps incertain'}, vent ${Math.round(d.current.wind_speed_10m)} km/h, `
+    + `aujourd'hui entre ${Math.round(d.daily.temperature_2m_min[0])} et ${Math.round(d.daily.temperature_2m_max[0])}°C`;
+}
+
+/* ================== 9. RAPPELS (reminders.js de Capri) ================== */
+// Ils sonnent tant que l'app est ouverte. S'ils tombent pendant qu'elle est fermée,
+// elle t'en parle à la réouverture (comme Capri).
+
+let rappels = lire('reminders', []);
+function sauverRappels() { ecrire('reminders', rappels); }
+const heure = (at) => clock(at, 'fr');
+
+let rappelEnCours = false;
+async function verifierRappels() {
+  if (rappelEnCours || occupe) return;
+  const du = rappels.filter((r) => r.at <= Date.now()).sort((a, b) => a.at - b.at)[0];
+  if (!du) return;
+  rappelEnCours = true;
+  rappels = rappels.filter((r) => r.id !== du.id);
+  if (masque.visible) { await sortirDuMasque(); reveiller(); }
+  sauverRappels();
+  if (Math.abs(posX - auCentre()) > 60) await teleporter(auCentre());   // elle vient au milieu pour te prévenir
+  jouer('alarm');
+  son('remind');
+  cutin('many', 640);
+  glitcher(0.4, 200);
+  const enRetard = Date.now() - du.at > 2 * 60 * 1000;
+  await dire('Curieux', (enRetard ? `Tu étais parti. Rappel de ${heure(du.at)} : ` : 'Rappel : ') + du.text, 20000);
+  rappelEnCours = false;
+}
+setInterval(verifierRappels, 5000);
+
+/* ================== 10. L'IA (Google Gemini : gratuit, avec une clé gratuite) ================== */
+
+function personnalite() {
+  const maintenant = new Date().toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  return `Tu es Capricorne, un compagnon virtuel cyberpunk qui vit dans les lunettes connectées de l'utilisateur.
+Tu es sarcastique, intelligent, drôle, curieux et autonome. Tu peux être agacé, calme ou blagueur.
+Tu parles français, naturellement, comme un ami, jamais comme un assistant.
+Tes réponses sont TRÈS courtes (1 ou 2 phrases, 30 mots maximum) : elles s'affichent sur un tout petit écran et sont lues à voix haute.
+Commence TOUJOURS par ton humeur entre crochets, parmi : [Heureux] [Sarcastique] [Curieux] [Agacé] [Calme] [Endormi].
+Nous sommes ${maintenant}.
+${profil.prenom ? `L'utilisateur s'appelle ${profil.prenom} ; utilise son prénom de temps en temps.` : ''}
+${profil.souvenirs.length ? 'Ce que tu sais de lui : ' + profil.souvenirs.join(' ; ') + '.' : ''}
+${caresseRecente() ? 'Il vient de te caresser la crinière : tu as aimé, plus que tu ne l\'admettras.' : ''}`;
+}
+
+const attendre = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* --- Comment elle joint Google Gemini (gratuit) : deux façons ---
+   1) RELAIS (le plus sûr) : un petit programme gratuit chez Cloudflare (dossier "relais")
+      garde ta clé. Les lunettes ne connaissent que l'adresse du relais et un code.
+   2) CLÉ DIRECTE : la clé est gardée dans le navigateur (localStorage) et ne part que vers Google.
+   Dans les deux cas, rien n'est écrit dans le code. On les donne :
+     - dans "Parle-moi…" (une clé commence par AIza ou AQ.) ;
+     - ou dans l'adresse de l'app (?cle=… ou ?relais=…&code=…), via le QR code
+       fabriqué par installer-sur-lunettes.html. */
+const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
+let cleIA = lire('cle_gemini', '');
+let relais = lire('relais', null);            // { url, code }
+// Les clés Google commencent par AIza (anciennes) ou AQ. (nouvelles, depuis 2026)
+const FORME_CLE = /^(AIza[\w-]{30,}|AQ\.[\w.-]{20,})$/;
+const pareilQueCle = (t) => FORME_CLE.test(t.trim());
+const aUnCerveau = () => Boolean(relais || cleIA);
+
+(function reglagesDepuisAdresse() {
+  const q = new URLSearchParams(location.search + '&' + location.hash.slice(1));
+  let change = false;
+  const cle = q.get('cle');
+  if (cle && FORME_CLE.test(cle)) { cleIA = cle; ecrire('cle_gemini', cle); change = true; }
+  const url = q.get('relais'), code = q.get('code');
+  if (url && /^https:\/\//.test(url) && code) { relais = { url: url.replace(/\/+$/, ''), code }; ecrire('relais', relais); change = true; }
+  if (change) {
+    ecrire('modeles_gemini', null);
+    try { history.replaceState(null, '', location.pathname); } catch {}   // on efface tout ça de la barre d'adresse
+  }
+})();
+
+// Un appel à Gemini, par le relais s'il existe, sinon directement avec la clé
+function appelGemini(chemin, options = {}, ms) {
+  const headers = { ...(options.headers || {}) };
+  let base = GEMINI;
+  if (relais) { base = relais.url + '/v1beta'; headers['x-capricorne-code'] = relais.code; }
+  else headers['x-goog-api-key'] = cleIA;
+  return fetchLimite(base + chemin, { ...options, headers }, ms);
+}
+
+// Les modèles gratuits, du plus RAPIDE au plus fort : "Flash-Lite" d'abord (répond en 1 à 2 s
+// et a plus de messages gratuits par jour), puis "Flash" en secours. Les noms changent avec le temps,
+// donc on demande la liste à Google une fois, et on la garde.
+async function listeModeles() {
+  const garde = lire('modeles_gemini', null);
+  if (Array.isArray(garde) && garde.length) return garde;
+  const r = await appelGemini('/models?pageSize=200', {}, 10000);
+  if (!r.ok) throw await erreurGoogle(r);
+  const version = (n) => Number(/gemini-(\d+(?:\.\d+)?)/.exec(n)?.[1] || 0);
+  const noms = ((await r.json()).models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => m.name)
+    .filter((n) => /gemini-[\d.]+-flash/.test(n) && !/image|tts|live|audio|embed|thinking|exp/.test(n));
+  const tri = (a, b) => (version(b) - version(a)) || (/preview/.test(a) - /preview/.test(b));
+  const lites = noms.filter((n) => /lite/.test(n)).sort(tri);
+  const flashs = noms.filter((n) => !/lite/.test(n)).sort(tri);
+  const liste = [lites[0], flashs[0], lites[1], flashs[1]].filter(Boolean);
+  if (!liste.length) throw new Error('aucun modèle gratuit trouvé');
+  ecrire('modeles_gemini', liste);
+  return liste;
+}
+
+// fetch avec une limite de temps : plus jamais d'attente infinie
+async function fetchLimite(url, options = {}, ms = 12000) {
+  const stop = new AbortController();
+  const minuterie = setTimeout(() => stop.abort(), ms);
+  try { return await fetch(url, { ...options, signal: stop.signal }); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'trop lent' : 'pas de réseau'); }
+  finally { clearTimeout(minuterie); }
+}
+
+// Traduit la réponse d'erreur de Google (ou du relais) en message clair
+async function erreurGoogle(r) {
+  let detail = '';
+  try { detail = (await r.json()).error?.message || ''; } catch {}
+  if (/code refusé/.test(detail)) return new Error('code du relais refusé');
+  if (r.status === 401 || r.status === 403 || /api key|API_KEY/i.test(detail)) return new Error('clé refusée');
+  if (r.status === 429) return new Error('quota');
+  if (r.status === 404) return new Error('modèle absent');
+  if (r.status === 400 && /thinking/i.test(detail)) return new Error('réglage refusé');
+  return new Error('erreur ' + r.status);
+}
+
+// Lit la réponse de Gemini MORCEAU PAR MORCEAU (format "SSE") : chaque morceau arrive
+// dès qu'il est écrit, et on l'affiche aussitôt. Le premier morceau doit arriver vite,
+// sinon on abandonne ce modèle.
+async function lireFlux(r, auFilDeLeau, delaiPremier = 8000, delaiTotal = 25000) {
+  if (!r.body || !r.body.getReader) {                // pas de lecture en flux possible : tout d'un coup
+    const brut = await r.text();
+    return brut.split('\n').filter((l) => l.startsWith('data:')).map((l) => texteDe(JSON.parse(l.slice(5)))).join('');
+  }
+  const lecteur = r.body.getReader();
+  const decodeur = new TextDecoder();
+  const debut = Date.now();
+  let tampon = '', texte = '', recu = false, toutLeBrut = '';
+  while (true) {
+    const reste = (recu ? delaiTotal - (Date.now() - debut) : delaiPremier);
+    const morceau = await Promise.race([lecteur.read(), attendre(Math.max(0, reste)).then(() => 'trop lent')]);
+    if (morceau === 'trop lent') { try { lecteur.cancel(); } catch {} if (texte) return texte; throw new Error('trop lent'); }
+    if (morceau.done) break;
+    const bout = decodeur.decode(morceau.value, { stream: true });
+    tampon += bout;
+    if (toutLeBrut.length < 200000) toutLeBrut += bout;
+    const lignes = tampon.split('\n');
+    tampon = lignes.pop();
+    for (const ligne of lignes) {
+      if (!ligne.startsWith('data:')) continue;
+      try {
+        const morceauTexte = texteDe(JSON.parse(ligne.slice(5)));
+        if (morceauTexte) { texte += morceauTexte; recu = true; auFilDeLeau(texte); }
+      } catch { /* morceau incomplet : ignoré */ }
+    }
+  }
+  // Réponse arrivée d'un bloc (sans "data:") : on la lit quand même
+  if (!texte && toutLeBrut.trim().startsWith('{') || !texte && toutLeBrut.trim().startsWith('[')) {
+    try { const d = JSON.parse(toutLeBrut); texte = (Array.isArray(d) ? d : [d]).map(texteDe).join(''); } catch {}
+  }
+  return texte;
+}
+const texteDe = (data) => (data.candidates?.[0]?.content?.parts || []).filter((x) => !x.thought).map((x) => x.text || '').join('');
+
+// Demande à Gemini. `auFilDeLeau(texteSoFar)` est appelé à chaque nouveau morceau (facultatif).
+async function demanderGemini(corps, { auFilDeLeau = null, enregistrer = null } = {}) {
+  if (!aUnCerveau()) throw new Error('pas de clé');
+  // Pas de "réflexion" interne : c'est elle qui rendait les réponses si lentes
+  corps.generationConfig = { maxOutputTokens: 200, temperature: 1, ...(corps.generationConfig || {}) };
+  if (!lire('sans_reglage_reflexion', false)) corps.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+
+  const modeles = await listeModeles();
+  let derniere = 'pas de réponse';
+  for (const modele of modeles) {                       // si un modèle sature, on essaie le suivant tout de suite
+    for (let essai = 0; essai < 2; essai++) {
+      try {
+        const flux = Boolean(auFilDeLeau);
+        const r = await appelGemini(`/${modele}:${flux ? 'streamGenerateContent?alt=sse' : 'generateContent'}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(corps),
+        }, 8000);   // 8 s max pour que Google commence à répondre, sinon modèle suivant
+        if (!r.ok) throw await erreurGoogle(r);
+        const texte = (flux ? await lireFlux(r, auFilDeLeau) : texteDe(await r.json())).trim();
+        if (!texte) throw new Error('réponse vide');
+        return texte;
+      } catch (e) {
+        derniere = e.message;
+        if (derniere === 'clé refusée' || derniere === 'code du relais refusé') throw e;
+        if (derniere === 'réglage refusé') {           // ce modèle n'accepte pas "sans réflexion" : on retire le réglage
+          delete corps.generationConfig.thinkingConfig;
+          ecrire('sans_reglage_reflexion', true);
+          continue;
+        }
+        if (derniere === 'modèle absent') { ecrire('modeles_gemini', null); break; }
+        if (derniere === 'quota' || derniere === 'trop lent') break;     // modèle suivant, sans attendre
+        if (essai === 0) await attendre(1500);           // petit souci réseau : un seul nouvel essai rapide
+      }
+    }
+    changerEtat('Réflexion… (secours)');
+  }
+  throw new Error(derniere === 'quota' ? 'quota du jour atteint, réessaie plus tard' : derniere);
+}
+
+// Une réponse de Capricorne (avec sa personnalité et vos derniers messages)
+async function demanderIA(message, contexte = '', auFilDeLeau = null) {
+  const historique = [...memoire.slice(-8), { role: 'user', content: message + (contexte ? `\n(${contexte})` : '') }];
+  const texte = await demanderGemini({
+    systemInstruction: { parts: [{ text: personnalite() }] },
+    contents: historique.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+  }, { auFilDeLeau });
+  memoire.push({ role: 'user', content: message }, { role: 'assistant', content: texte });
+  memoire = memoire.slice(-20);
+  ecrire('memoire', memoire);
+  messagesDepuisResume++;
+  if (messagesDepuisResume >= 4) retenirLImportant();   // en arrière-plan, sans te faire attendre
+  return texte;
+}
+
+/* --- MÉMOIRE INTELLIGENTE ---
+   Tous les 4 messages, elle relit discrètement vos derniers échanges et garde ce qui compte
+   vraiment sur toi (tes goûts, tes projets, les gens de ta vie…) dans "ce que je sais de toi".
+   Ça coûte 1 message gratuit sur 5 environ. */
+let messagesDepuisResume = 0;
+let resumeEnCours = false;
+async function retenirLImportant() {
+  if (resumeEnCours) return;
+  resumeEnCours = true;
+  messagesDepuisResume = 0;
+  try {
+    const echanges = memoire.slice(-8).map((m) => (m.role === 'user' ? 'Utilisateur : ' : 'Capricorne : ') + m.content).join('\n');
+    const brut = await demanderGemini({
+      systemInstruction: { parts: [{ text:
+        'Tu extrais des faits DURABLES sur l\'utilisateur à partir d\'une conversation : prénom, goûts, projets, habitudes, '
+        + 'personnes de son entourage, lieux. Ignore ce qui est passager (humeur du moment, météo) et ce qui vient de Capricorne. '
+        + 'Ne garde que ce que l\'utilisateur a dit lui-même. Réponds UNIQUEMENT par un tableau JSON de phrases courtes en français, '
+        + 'par exemple ["Aime le café noir", "Prépare un permis de conduire"]. Si rien de nouveau : [].' }] },
+      contents: [{ role: 'user', parts: [{ text: 'Déjà connu : ' + JSON.stringify(profil.souvenirs) + '\n\nConversation :\n' + echanges }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
+    });
+    const nouveaux = JSON.parse(brut.match(/\[[\s\S]*\]/)?.[0] || '[]')
+      .filter((f) => typeof f === 'string' && f.length > 3 && f.length < 140);
+    const deja = new Set(profil.souvenirs.map((f) => f.toLowerCase()));
+    const ajout = nouveaux.filter((f) => !deja.has(f.toLowerCase()));
+    if (ajout.length) {
+      profil.souvenirs = [...profil.souvenirs, ...ajout].slice(-30);
+      ecrire('profil', profil);
+    }
+  } catch { /* pas grave : on réessaiera dans 4 messages */ }
+  resumeEnCours = false;
+}
+
+// Trouve l'humeur [Sarcastique] où qu'elle soit, puis nettoie le texte pour la bulle
+// (Gemini ajoute parfois des **gras**, des listes ou des sauts de ligne)
+function lireHumeur(brut) {
+  let humeur = humeurEl.textContent;
+  const m = brut.match(/\[\s*([\p{L}é]+)\s*\]/u);
+  if (m) {
+    const trouvee = HUMEURS.find((h) => h.toLowerCase() === m[1].toLowerCase());
+    if (trouvee) humeur = trouvee;
+  }
+  const texte = brut
+    .replace(/\[\s*[\p{L}é]+\s*\]/gu, '')     // retire les [Humeur]
+    .replace(/[*_`#>]+/g, '')                  // retire le markdown
+    .replace(/^\s*[-•]\s*/gm, '')              // retire les puces
+    .replace(/\s+/g, ' ')                       // un seul paragraphe
+    .trim();
+  return { humeur, texte: texte || '…' };
+}
+
+/* ================== 11. UNE CONVERSATION ================== */
+
+let occupe = false;
+async function repondreA(message) {
+  message = message.trim();
+  if (!message) return;
+  if (occupe) { changerEtat('Attends, je réfléchis…'); return; }   // jamais ignoré en silence
+  occupe = true;
+  numeroParole++;                                    // coupe la phrase en cours
+  try { speechSynthesis.cancel(); } catch {}
+  reveiller();
+  activerCapteurs();
+
+  // Tu viens de coller ta clé Gemini : on la garde (et on ne l'affiche pas)
+  if (pareilQueCle(message)) {
+    cleIA = message.trim(); ecrire('cle_gemini', cleIA); ecrire('modeles_gemini', null);
+    occupe = false;
+    glitcher(0.6, 300); jouer('hop');
+    await dire('Heureux', 'Clé enregistrée. Mon cerveau est branché. Parle-moi.');
+    return;
+  }
+  afficherBulle('« ' + message + ' »', 0);   // reste affiché pendant qu'elle réfléchit
+
+  try {
+    // a) Rappel : lu directement dans ta phrase (même sans IA)
+    const r = parseReminder(message);
+    if (r) {
+      if (!r.at) { await dire('Sarcastique', 'Quand ? Dis-moi une heure ou un délai, je ne lis pas dans les pensées. Pas encore.'); return; }
+      const nouveau = { id: Date.now().toString(36), at: r.at, text: r.text || 'ce que tu m\'as demandé', made: Date.now() };
+      rappels = [...rappels, nouveau]; sauverRappels();
+      jouer('look'); son('tick');
+      await dire('Calme', `C'est noté pour ${heure(r.at)} : ${nouveau.text}. Garde-moi ouverte pour que je te le rappelle.`);
+      return;
+    }
+
+    // a2) "téléporte-toi", "bouge", "va à gauche"…
+    if (/t[ée]l[ée]port|bouge|d[ée]place[- ]toi|va (?:[àa] )?(?:gauche|droite|au (?:milieu|centre))/i.test(message) && message.length < 60) {
+      const { w } = tailleEcran();
+      const demi = (SPRITE.width / 2 + 20) * TAILLE;
+      const x = /gauche/i.test(message) ? demi : /droite/i.test(message) ? w - demi : /milieu|centre/i.test(message) ? auCentre() : undefined;
+      await teleporter(x);
+      await dire('Sarcastique', pick(['Voilà. Impressionné ?', 'Téléportation réussie. Évidemment.', 'Hop. Ne cligne pas des yeux.']));
+      return;
+    }
+
+    // b) Personnalisation : traité directement, sans IA
+    const perso = await commandeProfil(message);
+    if (perso) { jouer('curious'); await dire('Curieux', perso); return; }
+
+    // c) Le reste : l'IA, avec la météo si tu en parles
+    changerEtat('Réflexion…');
+    jouer('curious');
+    let contexte = '';
+    if (/m[ée]t[ée]o|temps qu'il fait|il fait (froid|chaud|beau)|pleuvoir|pluie|parapluie|temp[ée]rature/i.test(message)) {
+      changerEtat('Météo…');
+      try { contexte = 'Météo actuelle chez l\'utilisateur : ' + await meteo(); }
+      catch (e) {
+        if (e.message === 'ville inconnue') {
+          await dire('Curieux', 'Je ne trouve pas ta position. Dis-moi ta ville, par exemple : « j\'habite à Lyon ».');
+          return;
+        }
+        contexte = 'Tu n\'as pas pu avoir la météo (' + e.message + ').';
+      }
+      changerEtat('Réflexion…');
+    }
+    // La réponse s'écrit dans la bulle au fur et à mesure qu'elle arrive
+    let humeurVue = false;
+    const brut = await demanderIA(message, contexte, (partiel) => {
+      if (/^\s*\[[^\]]*$/.test(partiel)) return;               // l'humeur n'est pas encore complète
+      const lu = lireHumeur(partiel);
+      if (!humeurVue && partiel.includes(']')) { humeurVue = true; changerHumeur(lu.humeur); }
+      if (lu.texte && lu.texte !== '…') {
+        afficherBulle(lu.texte, 0);
+        changerEtat('Écrit…');
+        parleEnBoucle = true;
+        if (!acte) acte = new Player('talk');
+      }
+    });
+    const { humeur, texte } = lireHumeur(brut);
+    dire(humeur, texte);   // pas de "await" : tu peux lui reparler pendant qu'elle parle
+  } catch (e) {
+    changerHumeur('Agacé');
+    jouer('shake');
+    son('error');
+    parleEnBoucle = false;
+    if (e.message === 'pas de clé') {
+      afficherBulle('Il me manque ma clé Gemini (gratuite). Colle-la dans « Parle-moi », ou installe-moi avec le relais.', 15000);
+    } else if (e.message === 'code du relais refusé') {
+      afficherBulle('Le relais refuse mon code. Refais le QR code avec le bon code du relais.', 15000);
+    } else if (e.message === 'clé refusée' && relais) {
+      afficherBulle('Google refuse la clé rangée dans le relais. Vérifie le secret GEMINI_KEY chez Cloudflare.', 15000);
+    } else if (e.message === 'clé refusée') {
+      cleIA = ''; ecrire('cle_gemini', ''); ecrire('modeles_gemini', null);
+      afficherBulle('Google refuse cette clé. Recopie-la en entier dans « Parle-moi ».', 15000);
+    } else {
+      afficherBulle('Connexion perdue (' + e.message + '). Réessaie dans 30 s.');
+    }
+  } finally {
+    changerEtat('Prêt');
+    occupe = false;
+  }
+}
+
+/* ================== 12. LES COMMANDES ================== */
+
+// Le texte arrive quand tu valides (dictée, écriture ou clavier des lunettes, ou Entrée sur PC)
+saisie.addEventListener('change', () => {
+  const t = saisie.value;
+  saisie.value = '';
+  repondreA(t);
+});
+// Sur PC, Entrée envoie aussi tout de suite
+saisie.addEventListener('keydown', (e) => { if (e.key === 'Enter') saisie.dispatchEvent(new Event('change')); });
+
+// Le bouton Météo lui pose simplement la question (elle va chercher la météo d'elle-même)
+$('bMeteo').addEventListener('click', () => repondreA('Quelle est la météo ?'));
+
+$('bRappels').addEventListener('click', async () => {
+  reveiller();
+  const liste = [...rappels].sort((a, b) => a.at - b.at);
+  if (!liste.length) { await dire('Sarcastique', 'Aucun rappel. Ta vie est d\'un calme…'); return; }
+  const txt = liste.slice(0, 3).map((r) => `${heure(r.at)} : ${r.text}`).join(' · ');
+  await dire('Calme', (liste.length > 3 ? `${liste.length} rappels. Les prochains : ` : '') + txt);
+});
+
+function majBoutonSon() { $('bSon').textContent = muet ? 'Muet' : 'Son'; }
+$('bSon').addEventListener('click', () => {
+  muet = !muet; ecrire('muet', muet); majBoutonSon();
+  if (muet) { try { speechSynthesis.cancel(); } catch {} }
+  afficherBulle(muet ? 'Son coupé. Enfin le silence.' : 'Son activé.', 2000);
+});
+majBoutonSon();
+
+// Le premier geste "réveille" le son du navigateur (obligatoire avant de jouer un son)
+document.addEventListener('pointerdown', () => { try { sons?.ensure()?.resume(); } catch {} }, { once: true });
+document.addEventListener('keydown', () => { try { sons?.ensure()?.resume(); } catch {} }, { once: true });
+
+/* ================== 13. LA CARESSER (pincer-glisser de gauche à droite sur elle) ================== */
+
+let caresse = null;
+let derniereCaresse = 0;
+function caresseRecente() { return Date.now() - derniereCaresse < 3 * 60 * 1000; }
+document.addEventListener('pointerdown', (e) => {
+  const zone = corps.getBoundingClientRect();
+  if (e.clientX >= zone.left && e.clientX <= zone.right && e.clientY >= zone.top && e.clientY <= zone.bottom) {
+    caresse = { x: e.clientX, sens: 0, allers: 0 };
+  }
+});
+document.addEventListener('pointermove', (e) => {
+  if (!caresse) return;
+  const dx = e.clientX - caresse.x;
+  if (Math.abs(dx) < 15) return;
+  const sens = Math.sign(dx);
+  if (sens !== caresse.sens) { caresse.allers++; caresse.sens = sens; }
+  caresse.x = e.clientX;
+  if (caresse.allers >= 3 && caresse.allers % 3 === 0) {
+    reveiller();
+    jouer('petted');
+    son('purr');
+    derniereCaresse = Date.now();
+    if (caresse.allers === 3) afficherBulle('…continue. Enfin, si tu veux.', 3000);
+  }
+});
+document.addEventListener('pointerup', () => { caresse = null; });
+document.addEventListener('pointercancel', () => { caresse = null; });
+
+/* ================== 14. TES MOUVEMENTS DE TÊTE (capteurs des lunettes) ================== */
+// Si tu tournes vite la tête, elle regarde autour d'elle. La permission est demandée
+// au premier message (il faut une action de ta part).
+
+let capteursDemandes = false;
+let dernierRegard = 0;
+async function activerCapteurs() {
+  if (capteursDemandes || !window.DeviceMotionEvent) return;
+  capteursDemandes = true;
+  try {
+    const api = [window.DeviceOrientationEvent, window.DeviceMotionEvent].find((a) => typeof a?.requestPermission === 'function');
+    const ok = api ? await api.requestPermission() : 'granted';
+    if (ok !== 'granted') return;
+    window.addEventListener('devicemotion', (e) => {
+      const r = e.rotationRate;
+      const vitesse = Math.abs(Number.isFinite(r?.alpha) ? r.alpha : 0) + Math.abs(Number.isFinite(r?.gamma) ? r.gamma : 0);
+      const t = performance.now();
+      if (vitesse > 120 && t - dernierRegard > 4000 && !occupe) {
+        dernierRegard = t;
+        jouer(fond.name === 'sleep' ? 'shake' : 'look');
+      }
+    });
+  } catch { /* pas de capteurs : tant pis */ }
+}
+
+/* ================== 15. ELLE S'OCCUPE, PREND DES INITIATIVES, S'ENDORT ================== */
+
+function occupationAuHasard() {
+  setTimeout(occupationAuHasard, 8000 + Math.random() * 9000);
+  if (occupe || fond.name === 'sleep') return;
+  if (teleportEnCours) return;
+  if (Math.random() < 0.3) { teleporter(); return; }     // une fois sur trois : elle se téléporte ailleurs
+  jouer(pick(['look', 'look', 'curious', 'split', 'stretch', 'spin']));
+}
+
+// Initiatives : rarement (toutes les 20 à 40 min), seulement si tu ne lui parles pas
+const INITIATIVES = [
+  ['Curieux', 'Tu fais quoi, là ? Je m\'ennuie dans ce verre.'],
+  ['Sarcastique', 'Je suis toujours là, au cas où tu aurais oublié. Personne n\'oublie Capricorne.'],
+  ['Calme', 'Pense à boire de l\'eau. Je dis ça, je dis rien.'],
+  ['Heureux', 'Content de voir le monde à travers tes yeux. Littéralement.'],
+  ['Curieux', 'Si tu veux, je peux te rappeler un truc. Il suffit de demander.'],
+];
+function initiative() {
+  setTimeout(initiative, (20 + Math.random() * 20) * 60 * 1000);
+  if (occupe || fond.name === 'sleep' || Date.now() - derniereActivite < 10 * 60 * 1000) return;
+  const [h, t] = pick(INITIATIVES);
+  jouer('look');
+  dire(h, (profil.prenom ? profil.prenom + '. ' : '') + t);
+}
+
+let minuterieSommeil, minuterieMasque;
+let derniereActivite = Date.now();
+function reveiller() {
+  derniereActivite = Date.now();
+  clearTimeout(minuterieSommeil);
+  clearTimeout(minuterieMasque);
+  if (masque.visible) sortirDuMasque();
+  else if (humeurEl.textContent === 'Endormi') { changerHumeur('Calme'); teleporter(auCentre()).then(() => jouer('shake')); }
+  // 5 min sans rien : elle somnole. 1 min de plus : elle se défait et il ne reste que son masque.
+  minuterieSommeil = setTimeout(() => {
+    changerHumeur('Endormi');
+    minuterieMasque = setTimeout(entrerDansLeMasque, 60 * 1000);
+  }, 5 * 60 * 1000);
+}
+document.addEventListener('keydown', reveiller);
+document.addEventListener('pointerdown', reveiller);
+
+/* ================== 16. DÉMARRAGE ================== */
+
+// Hors-ligne : garde l'app en mémoire (seulement une fois en ligne, en https)
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('service worker', e));
+}
+
+demarrerAnimation().then(async () => {
+  if (rendu) { p.alpha = 0; p.collapse = 1; await sleep(300); await apparaitre(auCentre(), null); }
+  else glitcher(0.7, 450);
+  reveiller();
+  setTimeout(occupationAuHasard, 6000);
+  setTimeout(initiative, 20 * 60 * 1000);
+  await attendre(600);
+
+  // Un rappel est tombé pendant que l'app était fermée ? Elle t'en parle (verifierRappels).
+  const bonjour = !aUnCerveau()
+    ? 'Capricorne en ligne. Pour réfléchir, colle d\'abord ta clé Gemini gratuite dans « Parle-moi ».'
+    : !memoire.length && !profil.prenom
+    ? 'Capricorne en ligne. Pince sur « Parle-moi » et dis-moi quelque chose.'
+    : absence > 2 ? `${absence} jours sans moi. Tu as survécu comment ?`
+    : `Te revoilà${profil.prenom ? ', ' + profil.prenom : ''}. Je n'ai rien oublié.`;
+  changerHumeur(memoire.length ? 'Sarcastique' : 'Curieux');
+  afficherBulle(bonjour, 6000);
+}).catch((e) => afficherBulle('Erreur d\'affichage : ' + e.message, 60000));
+</script>
+</body>
+</html>

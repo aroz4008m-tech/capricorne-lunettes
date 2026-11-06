@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installer Capricorne</title>
+<style>
+  :root { --neon: #ff2f6d; --vert: #33ff99; }
+  body { margin: 0; background: #0b0b10; color: #eee; font-family: "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { color: var(--neon); font-size: 26px; margin: 0 0 6px; }
+  p, li { line-height: 1.5; }
+  label { display: block; margin: 18px 0 6px; font-weight: 600; color: var(--vert); }
+  input { width: 100%; box-sizing: border-box; font-size: 16px; padding: 10px; background: #000; color: #fff; border: 2px solid #1d6b48; }
+  input:focus { border-color: var(--vert); outline: none; }
+  button { margin-top: 18px; font-size: 17px; padding: 10px 18px; background: var(--neon); color: #000; border: 0; font-weight: 700; cursor: pointer; }
+  #resultat { margin-top: 24px; display: none; }
+  #qr { background: #fff; padding: 16px; display: inline-block; }
+  #qr img { display: block; width: min(320px, 80vw); height: auto; image-rendering: pixelated; }
+  .attention { border-left: 4px solid var(--neon); padding: 8px 12px; background: #1a0a10; }
+  .erreur { color: var(--neon); }
+  small { color: #999; }
+  fieldset { margin-top: 14px; border: 1px solid #333; padding: 4px 14px 14px; }
+  legend { color: #ddd; padding: 0 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Installer Capricorne sur les lunettes</h1>
+  <p>Cette page fabrique le QR code à regarder avec tes lunettes. Tout se passe sur ton PC :
+     ta clé n'est envoyée nulle part.</p>
+
+  <label for="adresse">1. L'adresse de ton app en ligne (https)</label>
+  <input id="adresse" placeholder="https://ton-pseudo.github.io/capricorne-lunettes/" autocomplete="off">
+
+  <p><b>2. Comment elle joint l'IA</b> : remplis <b>A</b> (le plus sûr) <i>ou</i> <b>B</b>.</p>
+
+  <fieldset>
+    <legend>A. Avec ton relais Cloudflare (recommandé : ta clé ne va pas sur les lunettes)</legend>
+    <label for="relais">Adresse du relais</label>
+    <input id="relais" placeholder="https://capricorne-relais.ton-pseudo.workers.dev" autocomplete="off">
+    <label for="code">Code du relais (le secret CODE)</label>
+    <input id="code" type="password" placeholder="ton code" autocomplete="off">
+  </fieldset>
+
+  <fieldset>
+    <legend>B. Avec ta clé Gemini directement</legend>
+    <label for="cle">Clé Gemini (AIza… ou AQ.…)</label>
+    <input id="cle" type="password" placeholder="colle ta clé ici" autocomplete="off">
+  </fieldset>
+
+  <div><button id="fabriquer">Fabriquer le QR code</button></div>
+  <p id="message" class="erreur"></p>
+
+  <div id="resultat">
+    <div id="qr"></div>
+    <p><b>Méthode 1 :</b> mets tes lunettes et <b>regarde ce QR code</b>, puis accepte l'ajout.</p>
+    <p><b>Méthode 2 :</b> dans l'app Meta AI du téléphone : Paramètres de l'app &gt; Apps &gt; Web Apps &gt;
+       Connect Web App, puis colle cette adresse et appuie sur Save :</p>
+    <p><input id="lienTexte" readonly> <button id="copier" type="button">Copier l'adresse</button></p>
+    <p><small>Dans les deux cas, le mode développeur doit être activé dans l'app Meta AI (une seule fois).</small></p>
+    <p class="attention" id="avertissement"></p>
+  </div>
+</main>
+
+<script src="js/qrcode.js">$('copier').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('lienTexte').value); $('copier').textContent = 'Copié !'; }
+  catch { $('lienTexte').select(); document.execCommand('copy'); $('copier').textContent = 'Copié !'; }
+  setTimeout(() => { $('copier').textContent = 'Copier l\'adresse'; }, 2000);
+});
+</script>
+<script>
+const $ = (id) => document.getElementById(id);
+try {
+  $('adresse').value = localStorage.getItem('capricorne_adresse') || '';
+  $('relais').value = localStorage.getItem('capricorne_adresse_relais') || '';
+} catch {}
+
+$('fabriquer').addEventListener('click', () => {
+  $('message').textContent = '';
+  let adresse = $('adresse').value.trim();
+  const cle = $('cle').value.trim();
+  const relais = $('relais').value.trim().replace(/\/+$/, '');
+  const code = $('code').value.trim();
+
+  if (!/^https:\/\/[^\s]+$/i.test(adresse)) {
+    $('message').textContent = 'L\'adresse doit commencer par https:// (les lunettes refusent http).';
+    return;
+  }
+  if (relais || code) {
+    if (!/^https:\/\/[^\s]+$/i.test(relais)) { $('message').textContent = 'L\'adresse du relais doit commencer par https://'; return; }
+    if (code.length < 8) { $('message').textContent = 'Le code du relais doit faire au moins 8 caractères.'; return; }
+  } else if (!cle) {
+    $('message').textContent = 'Remplis A (relais) ou B (clé), sinon elle n\'aura pas de cerveau.';
+    return;
+  }
+  if (cle && !/^(AIza[\w-]{30,}|AQ\.[\w.-]{20,})$/.test(cle)) {
+    $('message').textContent = 'Cette clé ne ressemble pas à une clé Gemini (AIza… ou AQ.…).';
+    return;
+  }
+  if (!adresse.endsWith('/') && !/\.html?$/i.test(adresse)) adresse += '/';
+  try { localStorage.setItem('capricorne_adresse', adresse); if (relais) localStorage.setItem('capricorne_adresse_relais', relais); } catch {}
+
+  // L'adresse de l'app, avec le relais (prioritaire) ou la clé
+  const reglages = relais
+    ? '?relais=' + encodeURIComponent(relais) + '&code=' + encodeURIComponent(code)
+    : '?cle=' + encodeURIComponent(cle);
+  const adresseApp = adresse + reglages;
+  $('avertissement').textContent = relais
+    ? 'Ce QR code contient le code de ton relais (pas ta clé). Ne le montre à personne. Si tu as un doute, change le secret CODE chez Cloudflare et refais le QR code.'
+    : 'Ce QR code contient ta clé : ne le montre à personne, ne le prends pas en photo et ferme cette page une fois l\'installation finie.';
+  // Le lien spécial que les lunettes reconnaissent (format donné par Meta)
+  const lien = 'fb-viewapp://web_app_deep_link?appName=' + encodeURIComponent('Capricorne')
+    + '&appUrl=' + encodeURIComponent(adresseApp);
+
+  const qr = qrcode(0, 'M');   // taille automatique, correction d'erreur moyenne
+  qr.addData(lien);
+  qr.make();
+  $('qr').innerHTML = qr.createImgTag(8, 0);
+  $('lienTexte').value = adresseApp;
+  $('resultat').style.display = 'block';
+});
+</script>
+</body>
+</html>

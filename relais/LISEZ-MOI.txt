@@ -1,0 +1,25 @@
+RELAIS CAPRICORNE (Cloudflare, gratuit) — à faire une seule fois, ~10 minutes, rien à installer
+
+Pourquoi : avec le relais, ta clé Gemini reste chez Cloudflare. Les lunettes n'ont qu'une
+adresse et un code. Si un jour le code fuite, tu le changes en 1 minute, sans toucher à ta clé.
+
+1. Va sur dash.cloudflare.com et crée un compte gratuit (une adresse e-mail suffit, pas de carte).
+2. Dans le menu : "Workers & Pages" (ou "Compute > Workers"), puis "Create" / "Créer",
+   puis "Start with Hello World" / "Commencer avec Hello World".
+3. Donne-lui un nom, par exemple : capricorne-relais. Clique sur "Deploy" / "Déployer".
+4. Clique sur "Edit code" / "Modifier le code". Efface tout ce qui est écrit,
+   colle à la place TOUT le contenu du fichier worker.js (dans ce dossier), puis "Deploy".
+5. Retourne sur la page du Worker > "Settings" / "Paramètres" > "Variables and Secrets" /
+   "Variables et secrets" > "Add" / "Ajouter". Ajoute DEUX secrets (type "Secret") :
+     - Nom : GEMINI_KEY   Valeur : ta clé Gemini (AIza… ou AQ.…)
+     - Nom : CODE         Valeur : un code inventé, long, sans espace (ex. : neon-capri-7842-zeta)
+   Enregistre ("Deploy" / "Déployer" si on te le demande).
+6. Note l'adresse du Worker, en haut de sa page : https://capricorne-relais.TON-PSEUDO.workers.dev
+
+Ensuite, dans installer-sur-lunettes.html, remplis la partie A (adresse du relais + code).
+
+Test rapide : ouvre l'adresse du Worker dans Edge. Tu dois voir : {"error":{"message":"code refusé"}}.
+C'est normal et c'est bon signe : il refuse tous ceux qui n'ont pas le code.
+
+Gratuit : le plan gratuit de Cloudflare permet 100 000 demandes par jour, bien plus que ce qu'il faut.
+Les noms des boutons peuvent changer un peu selon la version du site de Cloudflare.

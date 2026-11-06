@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "Capricorne",
+  "description": "Compagnon IA cyberpunk : parle-lui, il te répond à voix haute.",
+  "appearance": {
+    "theme_color": "#FF2F6D",
+    "icon": { "src": "../icones/capricorne.svg", "type": "monochrome" }
+  }
+}

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Icône originale : deux cornes en zigzag au-dessus d'un visage en losange (une seule couleur, fond transparent) -->
+  <path fill="#ffffff" d="M14 6 L22 18 L18 20 L26 30 L20 30 L28 38 L32 34 L36 38 L44 30 L38 30 L46 20 L42 18 L50 6 L38 16 L42 18 L34 26 L32 24 L30 26 L22 18 L26 16 Z"/>
+  <path fill="#ffffff" d="M32 36 L46 46 L32 60 L18 46 Z M26 45 L30 48 L26 50 Z M38 45 L34 48 L38 50 Z"/>
+</svg>
